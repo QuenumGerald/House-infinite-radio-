@@ -1,6 +1,6 @@
 # Infinite House Radio — V1
 
-Pipeline minimal : **MiniMax Music 3.0 (GMI Cloud) → MP3 → PostgreSQL → KEEP/REJECT → buffer → FFmpeg → YouTube Live RTMPS**.
+Pipeline minimal : **MiniMax Music 3.0 (GMI Cloud) → MP3 → PostgreSQL → KEEP/REJECT → buffer → FFmpeg → YouTube Live et/ou Twitch RTMP**.
 
 ## Démarrage
 
@@ -8,7 +8,7 @@ Prérequis : Docker Compose et une clé API GMI. Copiez la configuration et ajou
 
 ```bash
 cp .env.example .env
-# renseigner GMI_API_KEY et YOUTUBE_STREAM_KEY
+# renseigner GMI_API_KEY, puis les variables YouTube et/ou Twitch souhaitées
 cp /chemin/vers/fond.jpg assets/background.jpg
 docker compose up --build postgres redis api worker
 ```
@@ -27,7 +27,7 @@ docker compose up stream
 2. Le worker télécharge le MP3, mesure sa durée avec `ffprobe`, puis le place en calibration.
 3. KEEP approuve la recette et place le morceau au buffer; REJECT l'écarte.
 4. Avec `AUTONOMOUS=true`, le worker choisit une recette approuvée au hasard. Le BPM varie selon le style (120–126 pour la House et le Minimal / Deep Tech, 170–176 pour le Drum & Bass) avec le mode vocal 65/20/15. Il remplit le buffer jusqu'à 60 minutes par défaut.
-5. Le streamer lit en FIFO et compose fond, visualizer réactif, nom et titre avec FFmpeg avant l'envoi RTMPS. Un échec remet le morceau au buffer.
+5. Le streamer lit en FIFO et compose fond, visualizer réactif, nom et titre une seule fois avec FFmpeg. Le muxer `tee` envoie ce flux encodé vers YouTube, Twitch ou les deux. Un échec remet le morceau au buffer.
 
 Deep House, Minimal / Deep Tech et Drum & Bass sont acceptés. Chaque morceau reçoit l'une des 2 à 3 identités d'artistes fictifs associées à son style. Aucun ML, embedding ou scoring n'est utilisé.
 
