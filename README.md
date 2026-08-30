@@ -26,10 +26,10 @@ docker compose up stream
 1. `POST /api/generations` crée une recette, sauvegarde le **payload exact** dans `Track.minimaxPayload`, puis publie un job BullMQ.
 2. Le worker télécharge le MP3, mesure sa durée avec `ffprobe`, puis le place en calibration.
 3. KEEP approuve la recette et place le morceau au buffer; REJECT l'écarte.
-4. Avec `AUTONOMOUS=true`, le worker choisit une recette approuvée au hasard. Seuls le BPM (120–126) et le mode vocal 65/20/15 varient. Il remplit le buffer jusqu'à 60 minutes par défaut.
+4. Avec `AUTONOMOUS=true`, le worker choisit une recette approuvée au hasard. Le BPM varie selon le style (120–126 pour la House et le Minimal / Deep Tech, 170–176 pour le Drum & Bass) avec le mode vocal 65/20/15. Il remplit le buffer jusqu'à 60 minutes par défaut.
 5. Le streamer lit en FIFO et compose fond, visualizer réactif, nom et titre avec FFmpeg avant l'envoi RTMPS. Un échec remet le morceau au buffer.
 
-Seuls Deep House, Minimal / Deep Tech et Soulful House sont acceptés. Aucun ML, embedding ou scoring n'est utilisé.
+Deep House, Minimal / Deep Tech et Drum & Bass sont acceptés. Chaque morceau reçoit l'une des 2 à 3 identités d'artistes fictifs associées à son style. Aucun ML, embedding ou scoring n'est utilisé.
 
 ## API
 

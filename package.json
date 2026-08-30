@@ -8,8 +8,9 @@
     "worker": "tsx src/worker.ts",
     "stream": "tsx src/stream.ts",
     "build": "tsc -p tsconfig.json && vite build",
+    "generate": "tsx src/generate-standalone.ts",
     "start": "node dist/src/server.js",
-    "test": "vitest run",
+    "test": "vitest run --root . src",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate deploy"
   },

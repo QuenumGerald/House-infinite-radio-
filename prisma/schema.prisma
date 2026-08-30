@@ -1,6 +1,48 @@
-generator client { provider = "prisma-client-js" }
-datasource db { provider = "postgresql" url = env("DATABASE_URL") }
-enum Genre { DEEP_HOUSE MINIMAL_DEEP_TECH SOULFUL_HOUSE }
-enum TrackStatus { GENERATING CALIBRATION BUFFERED PLAYING PLAYED REJECTED FAILED }
-model Recipe { id String @id @default(cuid()) genre Genre prompt String approved Boolean @default(false) createdAt DateTime @default(now()) tracks Track[] }
-model Track { id String @id @default(cuid()) title String genre Genre status TrackStatus @default(GENERATING) audioPath String? durationSeconds Float? minimaxPayload Json recipeId String recipe Recipe @relation(fields:[recipeId],references:[id]) createdAt DateTime @default(now()) updatedAt DateTime @updatedAt }
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Genre {
+  DEEP_HOUSE
+  MINIMAL_DEEP_TECH
+  DRUM_AND_BASS
+}
+
+enum TrackStatus {
+  GENERATING
+  CALIBRATION
+  BUFFERED
+  PLAYING
+  PLAYED
+  REJECTED
+  FAILED
+}
+
+model Recipe {
+  id        String   @id @default(cuid())
+  genre     Genre
+  prompt    String
+  approved  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  tracks    Track[]
+}
+
+model Track {
+  id              String      @id @default(cuid())
+  title           String
+  artist          String
+  genre           Genre
+  status          TrackStatus @default(GENERATING)
+  audioPath       String?
+  durationSeconds Float?
+  minimaxPayload  Json
+  recipeId        String
+  recipe          Recipe      @relation(fields: [recipeId], references: [id])
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+}
