@@ -1,11 +1,20 @@
 import { spawn } from 'node:child_process';
-import { writeFile } from 'node:fs/promises';
+import { readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { db } from './db.js';
 import { config } from './config.js';
+import { duration } from './probe.js';
 
 type StreamDestination = { name: 'YouTube' | 'Twitch'; target: string };
-type PlaylistTrack = { audioPath: string | null };
+type PlaylistTrack = {
+  audioPath: string | null;
+  title: string;
+  artist: string;
+  durationSeconds: number | null;
+};
+
+type Playlist = { path: string; tracks: PlaylistTrack[] };
+const JINGLE_EVERY_TRACKS = 3;
 
 function destination(url: string, key: string, name: StreamDestination['name']): StreamDestination | null {
   const cleanUrl = url.trim().replace(/\/+$/, '');
@@ -30,37 +39,69 @@ async function buildPlaylist() {
   const tracks = await db.track.findMany({
     where: { status: 'BUFFERED', audioPath: { not: null } },
     orderBy: { createdAt: 'asc' },
-    select: { audioPath: true }
+    select: { audioPath: true, title: true, artist: true, durationSeconds: true }
+  });
+  const musicTracks = tracks as PlaylistTrack[];
+  const jingleDir = join(config.MEDIA_DIR, 'jingles');
+  const jingleFiles = await readdir(jingleDir).then(files => files.filter(file => /^house-radio-jingle-\d+\.mp3$/.test(file)).sort())
+    .catch(() => [] as string[]);
+  const jingles = await Promise.all(jingleFiles.map(async (file): Promise<PlaylistTrack | null> => {
+    const audioPath = join(jingleDir, file);
+    try {
+      return { audioPath, title: 'Infinite House Radio', artist: 'Station ID', durationSeconds: await duration(audioPath) };
+    } catch {
+      return null;
+    }
+  }));
+  const usableJingles = jingles.filter((jingle): jingle is PlaylistTrack => jingle !== null);
+  const playlistTracks = musicTracks.flatMap((track, index) => {
+    const jingle = usableJingles.length && (index + 1) % JINGLE_EVERY_TRACKS === 0
+      ? usableJingles[Math.floor(index / JINGLE_EVERY_TRACKS) % usableJingles.length]
+      : null;
+    return jingle ? [track, jingle] : [track];
   });
   const playlistPath = join(config.MEDIA_DIR, 'stream-playlist.ffconcat');
-  const entries = (tracks as PlaylistTrack[])
+  const entries = playlistTracks
     .flatMap(track => track.audioPath ? [`file '${quoteConcatPath(track.audioPath)}'`] : [])
     .join('\n');
   if (!entries) throw new Error('No buffered audio tracks available for the stream playlist.');
   await writeFile(playlistPath, `ffconcat version 1.0\n${entries}\n`);
-  return playlistPath;
+  if (usableJingles.length) console.log(`Inserted ${usableJingles.length} station jingle(s), every ${JINGLE_EVERY_TRACKS} tracks.`);
+  return { path: playlistPath, tracks: playlistTracks } satisfies Playlist;
 }
 
 function startFfmpeg(playlistPath: string) {
+  // `tee` is needed only when two platforms are enabled. Using FLV directly for
+  // a single destination avoids an extra muxer layer in the Twitch-only path.
+  const output = destinations.length === 1
+    ? ['-f', 'flv', destinations[0].target]
+    : ['-f', 'tee', destinations.map(item => `[f=flv]${item.target}`).join('|')];
   const titleFile = join(config.MEDIA_DIR, 'current-title.txt');
-  const teeTarget = destinations.map(item => `[f=flv]${item.target}`).join('|');
-  // Keep the RTMP transport deliberately simple and stable. The audio timestamps from
-  // concat MP3 files are normalised before encoding; the visualiser is not on this
-  // critical path, so it cannot stall the broadcast.
-  const filter = `[0:v]drawtext=text='INFINITE HOUSE RADIO':fontcolor=white:fontsize=54:x=60:y=60,drawtext=textfile='${titleFile}':reload=1:fontcolor=white:fontsize=34:x=60:y=130[v];[1:a]asetpts=N/SR/TB[a]`;
+  // A calm waveform is much lighter than a scrolling spectrum, avoiding both
+  // the strobe effect and encoder starvation on a continuous live stream.
+  const filter = `[1:a]asetpts=N/SR/TB,asplit=2[audio][visualizer];[visualizer]showspectrum=s=1024x260:mode=combined:color=green:scale=cbrt:slide=scroll,format=rgba[spectrum];[0:v]scale=1280:720,drawtext=text='INFINITE HOUSE RADIO':fontcolor=white:fontsize=42:x=40:y=40:shadowcolor=black:shadowx=2:shadowy=2,drawtext=textfile='${titleFile}':reload=1:fontcolor=white:fontsize=26:x=40:y=100:shadowcolor=black:shadowx=2:shadowy=2[background];[background][spectrum]overlay=128:230:shortest=1[v]`;
   const ffmpeg = spawn('ffmpeg', [
     '-loop', '1', '-framerate', '30', '-i', config.BACKGROUND_PATH,
     '-re', '-f', 'concat', '-safe', '0', '-i', playlistPath,
-    '-filter_complex', filter, '-map', '[v]', '-map', '[a]',
+    '-filter_complex_threads', '1', '-filter_complex', filter, '-map', '[v]', '-map', '[audio]',
     '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
     '-r', '30', '-g', '60', '-keyint_min', '60', '-sc_threshold', '0',
-    '-b:v', '4500k', '-maxrate', '4500k', '-bufsize', '9000k',
-    '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', '-f', 'tee', teeTarget
+    '-b:v', '2500k', '-maxrate', '2500k', '-bufsize', '5000k',
+    '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', ...output
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
 
   ffmpeg.stderr.setEncoding('utf8');
   ffmpeg.stderr.on('data', chunk => process.stderr.write(redactFfmpegOutput(chunk)));
   return ffmpeg;
+}
+
+async function updateTitleFile(tracks: PlaylistTrack[]) {
+  const titleFile = join(config.MEDIA_DIR, 'current-title.txt');
+  for (const track of tracks) {
+    await writeFile(titleFile, `NOW PLAYING: ${track.artist} • ${track.title}`);
+    const durationMs = Math.max(1, Math.round((track.durationSeconds || 0) * 1000));
+    await new Promise(resolve => setTimeout(resolve, durationMs));
+  }
 }
 
 async function run() {
@@ -77,8 +118,11 @@ async function run() {
     await new Promise(resolve => setTimeout(resolve, 10_000));
   }
 
-  await writeFile(join(config.MEDIA_DIR, 'current-title.txt'), 'Continuous mix');
-  const ffmpeg = startFfmpeg(await buildPlaylist());
+  const playlist = await buildPlaylist();
+  void updateTitleFile(playlist.tracks).catch(error => {
+    console.error(`Could not update the on-screen title: ${error instanceof Error ? error.message : error}`);
+  });
+  const ffmpeg = startFfmpeg(playlist.path);
   ffmpeg.once('close', code => {
     console.error(`FFmpeg exited with code ${code ?? 'unknown'}`);
     process.exit(1);
