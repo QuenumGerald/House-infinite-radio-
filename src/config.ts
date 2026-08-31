@@ -6,7 +6,7 @@ export const config = z.object({
   GMI_API_KEY: z.string().default(''), GMI_BASE_URL: z.string().url().default('https://api.gmi-serving.com'),
   MINIMAX_MODEL: z.string().default('music-3.0'), MEDIA_DIR: z.string().default('./data/media'), PORT: z.coerce.number().default(3000),
   AUTONOMOUS: z.string().default('false').transform(v => v === 'true'), TARGET_BUFFER_MINUTES: z.coerce.number().default(60),
-  MIN_BUFFER_MINUTES: z.coerce.number().default(30), BACKGROUND_PATH: z.string().default('./assets/background.jpg'),
+  MIN_BUFFER_MINUTES: z.coerce.number().default(30), BACKGROUND_PATH: z.string().default('./assets/background-720.jpg'),
   YOUTUBE_RTMPS_URL: z.string().default('rtmps://a.rtmps.youtube.com/live2'), YOUTUBE_STREAM_KEY: z.string().default(''),
   TWITCH_RTMP_URL: z.string().default(''), TWITCH_STREAM_KEY: z.string().default('')
 }).parse(process.env);

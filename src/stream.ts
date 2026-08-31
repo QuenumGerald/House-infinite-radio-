@@ -7,7 +7,7 @@ import { completeTrack, reserveNextTrack, type StreamTrack } from './stream-sele
 
 type Destination = { name: 'YouTube' | 'Twitch'; target: string };
 type Jingle = Pick<StreamTrack, 'audioPath' | 'title' | 'artist'>;
-const PCM_SECONDS = 44_100 * 2 * 2;
+const PCM_BYTES_PER_SECOND = 44_100 * 2 * 2;
 
 function destination(url: string, key: string, name: Destination['name']): Destination | null {
   const base = url.trim().replace(/\/+$/, '');
@@ -15,6 +15,15 @@ function destination(url: string, key: string, name: Destination['name']): Desti
 }
 const destinations = [destination(config.YOUTUBE_RTMPS_URL, config.YOUTUBE_STREAM_KEY, 'YouTube'), destination(config.TWITCH_RTMP_URL, config.TWITCH_STREAM_KEY, 'Twitch')].filter((item): item is Destination => item !== null);
 const titleFile = join(config.MEDIA_DIR, 'current-title.txt');
+const VIDEO_OVERLAY_FILTER = [
+  "[1:v][wave]overlay=x=(W-w)/2:y=(H-h)/2+65:format=auto,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='INFINITE SLOP RADIO':x=58:y=46:fontsize=32:fontcolor=white@0.92:shadowcolor=black@0.7:shadowx=2:shadowy=2",
+  `drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:textfile=${titleFile}:reload=1:x=60:y=95:fontsize=19:fontcolor=white@0.95:shadowcolor=black@0.8:shadowx=2:shadowy=2`,
+  "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='LIVE':x=w-112:y=52:fontsize=20:fontcolor=white:box=1:boxcolor=red@0.95:boxborderw=8[v]"
+].join(',');
+const AUDIO_VISUAL_FILTER = [
+  '[0:a]asplit=2[audio][visual]',
+  '[visual]showwaves=s=420x72:mode=cline:draw=full:colors=0x00ff66[wave]'
+].join(';') + ';' + VIDEO_OVERLAY_FILTER;
 
 function wait(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function redact(value: string) { return destinations.reduce((text, item) => text.replaceAll(item.target, `[${item.name} RTMP destination]`), value); }
@@ -35,8 +44,15 @@ async function decodeInto(audioPath: string, input: NodeJS.WritableStream) {
   let error = '';
   decoder.stderr.setEncoding('utf8');
   decoder.stderr.on('data', chunk => { error += chunk; });
-  for await (const chunk of decoder.stdout) await writePcm(input, Buffer.from(chunk));
-  const code = await new Promise<number | null>(resolve => decoder.once('close', resolve));
+  const closed = new Promise<number | null>(resolve => decoder.once('close', resolve));
+  for await (const chunk of decoder.stdout) {
+    const pcm = Buffer.from(chunk);
+    await writePcm(input, pcm);
+    // Keep the permanent encoder fed at audio speed. Depending on FFmpeg's
+    // stdout buffering, -re on the decoder can still arrive in bursts.
+    await wait(Math.round((pcm.length / PCM_BYTES_PER_SECOND) * 1_000));
+  }
+  const code = await closed;
   if (code !== 0) throw new Error(`Audio decoder exited with ${code}: ${error.trim()}`);
 }
 
@@ -46,9 +62,12 @@ async function loadJingles(): Promise<Jingle[]> {
 }
 
 function startEncoder() {
-  const output = destinations.length === 1 ? ['-f', 'flv', destinations[0].target] : ['-f', 'tee', destinations.map(item => `[f=flv]${item.target}`).join('|')];
-  const filter = `[1:a]asetpts=N/SR/TB,asplit=2[audio][wave];[wave]showwaves=s=960x200:mode=cline:colors=0x39ff14,format=rgba,colorkey=0x000000:0.01:0.0[w];[0:v]scale=1280:720,drawbox=x=24:y=24:w=710:h=120:color=black@0.42:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='INFINITE SLOP RADIO':fontcolor=0xf7fbff:fontsize=42:x=48:y=44,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:textfile='${titleFile}':reload=1:fontcolor=0x59e5d2:fontsize=24:x=50:y=101[bg];[bg][w]overlay=160:260:shortest=1[v]`;
-  const process = spawn('ffmpeg', ['-loop', '1', '-framerate', '30', '-i', config.BACKGROUND_PATH, '-thread_queue_size', '2048', '-f', 's16le', '-ar', '44100', '-ac', '2', '-i', 'pipe:0', '-filter_complex_threads', '1', '-filter_complex', filter, '-map', '[v]', '-map', '[audio]', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p', '-r', '20', '-g', '40', '-b:v', '2500k', '-maxrate', '2500k', '-bufsize', '5000k', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', ...output], { stdio: ['pipe', 'ignore', 'pipe'] });
+  const output = destinations.length === 1
+    ? ['-flvflags', 'no_duration_filesize', '-f', 'flv', destinations[0].target]
+    : ['-f', 'tee', destinations.map(item => `[f=flv]${item.target}`).join('|')];
+  // The pipe must be FFmpeg's first input. With a looping still image first,
+  // FFmpeg 5.1 can wait indefinitely before producing the initial frame.
+  const process = spawn('ffmpeg', ['-thread_queue_size', '4096', '-f', 's16le', '-ar', '44100', '-ac', '2', '-i', 'pipe:0', '-re', '-loop', '1', '-framerate', '15', '-i', config.BACKGROUND_PATH, '-filter_complex', AUDIO_VISUAL_FILTER, '-map', '[v]', '-map', '[audio]', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p', '-r', '15', '-g', '30', '-b:v', '2000k', '-maxrate', '2000k', '-bufsize', '4000k', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', ...output], { stdio: ['pipe', 'ignore', 'pipe'] });
   process.stderr.setEncoding('utf8'); process.stderr.on('data', chunk => globalThis.process.stderr.write(redact(chunk)));
   if (!process.stdin) throw new Error('Could not open main FFmpeg PCM input.');
   return process;
@@ -72,18 +91,19 @@ async function run() {
   const encoder = startEncoder();
   encoder.once('close', code => { console.error(`FFmpeg exited with code ${code ?? 'unknown'}`); process.exit(1); });
   if (!encoder.stdin) throw new Error('Missing FFmpeg PCM input.');
-  // Prime the raw PCM input before decoding the first track. This gives the
-  // audio visualizer enough samples to initialise instead of stalling at frame 1.
-  await writePcm(encoder.stdin, Buffer.alloc(PCM_SECONDS * 2));
+  // Two seconds are enough for the initial audio/video timestamps to lock.
+  await writePcm(encoder.stdin, Buffer.alloc(PCM_BYTES_PER_SECOND * 2));
+  await wait(2_000);
   const jingles = await loadJingles(); let musicCount = 0; let jingleIndex = 0;
   while (true) {
     const track = await reserveNextTrack(repository);
-    if (!track) { await writeFile(titleFile, 'WAITING FOR THE NEXT TRACK'); await writePcm(encoder.stdin, Buffer.alloc(PCM_SECONDS * 2)); await wait(2_000); continue; }
+    if (!track) { await writeFile(titleFile, 'WAITING FOR THE NEXT TRACK'); await writePcm(encoder.stdin, Buffer.alloc(PCM_BYTES_PER_SECOND)); await wait(1_000); continue; }
     try {
+      console.error(`Playing: ${track.artist} - ${track.title}`);
       await play(track, encoder.stdin); await completeTrack(repository, track.id); musicCount++;
       if (jingles.length && musicCount % 3 === 0) await play(jingles[jingleIndex++ % jingles.length], encoder.stdin);
     } catch (error) {
-      await repository.updateStatus(track.id, 'BUFFERED'); console.error(`Could not play ${track.id}: ${error instanceof Error ? error.message : error}`); await writePcm(encoder.stdin, Buffer.alloc(PCM_SECONDS * 2));
+      await repository.updateStatus(track.id, 'BUFFERED'); console.error(`Could not play ${track.id}: ${error instanceof Error ? error.message : error}`); await writePcm(encoder.stdin, Buffer.alloc(PCM_BYTES_PER_SECOND)); await wait(1_000);
     }
   }
 }
