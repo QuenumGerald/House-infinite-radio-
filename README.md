@@ -1,4 +1,4 @@
-# Infinite House Radio — V1
+# Infinite Slop Radio — V1
 
 Pipeline minimal : **MiniMax Music 3.0 (GMI Cloud) → MP3 → PostgreSQL → KEEP/REJECT → buffer → FFmpeg → YouTube Live et/ou Twitch RTMP**.
 

@@ -3,133 +3,88 @@ import { readdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { db } from './db.js';
 import { config } from './config.js';
-import { duration } from './probe.js';
+import { completeTrack, reserveNextTrack, type StreamTrack } from './stream-selection.js';
 
-type StreamDestination = { name: 'YouTube' | 'Twitch'; target: string };
-type PlaylistTrack = {
-  audioPath: string | null;
-  title: string;
-  artist: string;
-  durationSeconds: number | null;
+type Destination = { name: 'YouTube' | 'Twitch'; target: string };
+type Jingle = Pick<StreamTrack, 'audioPath' | 'title' | 'artist'>;
+const PCM_SECONDS = 44_100 * 2 * 2;
+
+function destination(url: string, key: string, name: Destination['name']): Destination | null {
+  const base = url.trim().replace(/\/+$/, '');
+  return base && key.trim() ? { name, target: `${base}/${key.trim()}` } : null;
+}
+const destinations = [destination(config.YOUTUBE_RTMPS_URL, config.YOUTUBE_STREAM_KEY, 'YouTube'), destination(config.TWITCH_RTMP_URL, config.TWITCH_STREAM_KEY, 'Twitch')].filter((item): item is Destination => item !== null);
+const titleFile = join(config.MEDIA_DIR, 'current-title.txt');
+
+function wait(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
+function redact(value: string) { return destinations.reduce((text, item) => text.replaceAll(item.target, `[${item.name} RTMP destination]`), value); }
+
+async function writePcm(input: NodeJS.WritableStream, bytes: Buffer) {
+  if (input.write(bytes)) return;
+  await new Promise<void>((resolve, reject) => {
+    const done = () => { input.off('error', fail); resolve(); };
+    const fail = (error: Error) => { input.off('drain', done); reject(error); };
+    input.once('drain', done);
+    input.once('error', fail);
+  });
+}
+
+async function decodeInto(audioPath: string, input: NodeJS.WritableStream) {
+  const decoder = spawn('ffmpeg', ['-v', 'error', '-i', audioPath, '-f', 's16le', '-ar', '44100', '-ac', '2', 'pipe:1'], { stdio: ['ignore', 'pipe', 'pipe'] });
+  if (!decoder.stdout) throw new Error('Could not open decoder audio output.');
+  let error = '';
+  decoder.stderr.setEncoding('utf8');
+  decoder.stderr.on('data', chunk => { error += chunk; });
+  for await (const chunk of decoder.stdout) await writePcm(input, Buffer.from(chunk));
+  const code = await new Promise<number | null>(resolve => decoder.once('close', resolve));
+  if (code !== 0) throw new Error(`Audio decoder exited with ${code}: ${error.trim()}`);
+}
+
+async function loadJingles(): Promise<Jingle[]> {
+  const files = await readdir(join(config.MEDIA_DIR, 'jingles')).then(files => files.filter(file => /^infinite-slop-radio-jingle-\d+\.mp3$/.test(file)).sort()).catch(() => [] as string[]);
+  return files.map(file => ({ audioPath: join(config.MEDIA_DIR, 'jingles', file), artist: 'Station ID', title: 'Infinite Slop Radio' }));
+}
+
+function startEncoder() {
+  const output = destinations.length === 1 ? ['-f', 'flv', destinations[0].target] : ['-f', 'tee', destinations.map(item => `[f=flv]${item.target}`).join('|')];
+  const filter = `[1:a]asetpts=N/SR/TB,asplit=2[audio][wave];[wave]showwaves=s=960x200:mode=cline:colors=0x39ff14,format=rgba,colorkey=0x000000:0.01:0.0[w];[0:v]scale=1280:720,drawbox=x=24:y=24:w=710:h=120:color=black@0.42:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='INFINITE SLOP RADIO':fontcolor=0xf7fbff:fontsize=42:x=48:y=44,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:textfile='${titleFile}':reload=1:fontcolor=0x59e5d2:fontsize=24:x=50:y=101[bg];[bg][w]overlay=160:260:shortest=1[v]`;
+  const process = spawn('ffmpeg', ['-loop', '1', '-framerate', '30', '-i', config.BACKGROUND_PATH, '-thread_queue_size', '2048', '-f', 's16le', '-ar', '44100', '-ac', '2', '-i', 'pipe:0', '-filter_complex_threads', '1', '-filter_complex', filter, '-map', '[v]', '-map', '[audio]', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p', '-r', '20', '-g', '40', '-b:v', '2500k', '-maxrate', '2500k', '-bufsize', '5000k', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', ...output], { stdio: ['pipe', 'ignore', 'pipe'] });
+  process.stderr.setEncoding('utf8'); process.stderr.on('data', chunk => globalThis.process.stderr.write(redact(chunk)));
+  if (!process.stdin) throw new Error('Could not open main FFmpeg PCM input.');
+  return process;
+}
+
+const repository = {
+  findOldestBuffered: () => db.track.findFirst({ where: { status: 'BUFFERED', audioPath: { not: null } }, orderBy: { createdAt: 'asc' }, select: { id: true, title: true, artist: true, audioPath: true } }),
+  updateStatus: async (id: string, status: 'PLAYING' | 'PLAYED' | 'BUFFERED') => { await db.track.update({ where: { id }, data: { status } }); }
 };
 
-type Playlist = { path: string; tracks: PlaylistTrack[] };
-const JINGLE_EVERY_TRACKS = 3;
-
-function destination(url: string, key: string, name: StreamDestination['name']): StreamDestination | null {
-  const cleanUrl = url.trim().replace(/\/+$/, '');
-  const cleanKey = key.trim();
-  return cleanUrl && cleanKey ? { name, target: `${cleanUrl}/${cleanKey}` } : null;
-}
-
-const destinations = [
-  destination(config.YOUTUBE_RTMPS_URL, config.YOUTUBE_STREAM_KEY, 'YouTube'),
-  destination(config.TWITCH_RTMP_URL, config.TWITCH_STREAM_KEY, 'Twitch')
-].filter((item): item is StreamDestination => item !== null);
-
-function redactFfmpegOutput(message: string) {
-  return destinations.reduce((redacted, item) => redacted.replaceAll(item.target, `[${item.name} RTMP destination]`), message);
-}
-
-function quoteConcatPath(path: string) {
-  return path.replaceAll("'", "'\\\\''");
-}
-
-async function buildPlaylist() {
-  const tracks = await db.track.findMany({
-    where: { status: 'BUFFERED', audioPath: { not: null } },
-    orderBy: { createdAt: 'asc' },
-    select: { audioPath: true, title: true, artist: true, durationSeconds: true }
-  });
-  const musicTracks = tracks as PlaylistTrack[];
-  const jingleDir = join(config.MEDIA_DIR, 'jingles');
-  const jingleFiles = await readdir(jingleDir).then(files => files.filter(file => /^house-radio-jingle-\d+\.mp3$/.test(file)).sort())
-    .catch(() => [] as string[]);
-  const jingles = await Promise.all(jingleFiles.map(async (file): Promise<PlaylistTrack | null> => {
-    const audioPath = join(jingleDir, file);
-    try {
-      return { audioPath, title: 'Infinite House Radio', artist: 'Station ID', durationSeconds: await duration(audioPath) };
-    } catch {
-      return null;
-    }
-  }));
-  const usableJingles = jingles.filter((jingle): jingle is PlaylistTrack => jingle !== null);
-  const playlistTracks = musicTracks.flatMap((track, index) => {
-    const jingle = usableJingles.length && (index + 1) % JINGLE_EVERY_TRACKS === 0
-      ? usableJingles[Math.floor(index / JINGLE_EVERY_TRACKS) % usableJingles.length]
-      : null;
-    return jingle ? [track, jingle] : [track];
-  });
-  const playlistPath = join(config.MEDIA_DIR, 'stream-playlist.ffconcat');
-  const entries = playlistTracks
-    .flatMap(track => track.audioPath ? [`file '${quoteConcatPath(track.audioPath)}'`] : [])
-    .join('\n');
-  if (!entries) throw new Error('No buffered audio tracks available for the stream playlist.');
-  await writeFile(playlistPath, `ffconcat version 1.0\n${entries}\n`);
-  if (usableJingles.length) console.log(`Inserted ${usableJingles.length} station jingle(s), every ${JINGLE_EVERY_TRACKS} tracks.`);
-  return { path: playlistPath, tracks: playlistTracks } satisfies Playlist;
-}
-
-function startFfmpeg(playlistPath: string) {
-  // `tee` is needed only when two platforms are enabled. Using FLV directly for
-  // a single destination avoids an extra muxer layer in the Twitch-only path.
-  const output = destinations.length === 1
-    ? ['-f', 'flv', destinations[0].target]
-    : ['-f', 'tee', destinations.map(item => `[f=flv]${item.target}`).join('|')];
-  const titleFile = join(config.MEDIA_DIR, 'current-title.txt');
-  // A calm waveform is much lighter than a scrolling spectrum, avoiding both
-  // the strobe effect and encoder starvation on a continuous live stream.
-  const filter = `[1:a]asetpts=N/SR/TB,asplit=3[audio][visualizer][meter];[visualizer]showwaves=s=960x200:mode=cline:colors=0x39ff14,format=rgba,colorkey=0x000000:0.01:0.0[waveform];[meter]showvolume=s=220x70:orientation=h:colors=0x39ff14,format=rgba,colorkey=0x000000:0.01:0.0[vumeter];[0:v]scale=1280:720,drawbox=x=24:y=24:w=710:h=120:color=black@0.42:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='INFINITE HOUSE RADIO':fontcolor=0xf7fbff:fontsize=42:x=48:y=44:shadowcolor=black@0.7:shadowx=2:shadowy=2,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:textfile='${titleFile}':reload=1:fontcolor=0x59e5d2:fontsize=24:x=50:y=101:shadowcolor=black@0.8:shadowx=1:shadowy=1[background];[background][waveform]overlay=160:260[withwave];[withwave][vumeter]overlay=1015:625:shortest=1[v]`;
-  const ffmpeg = spawn('ffmpeg', [
-    '-loop', '1', '-framerate', '30', '-i', config.BACKGROUND_PATH,
-    '-re', '-f', 'concat', '-safe', '0', '-i', playlistPath,
-    '-filter_complex_threads', '1', '-filter_complex', filter, '-map', '[v]', '-map', '[audio]',
-    '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
-    '-r', '20', '-g', '40', '-keyint_min', '40', '-sc_threshold', '0',
-    '-b:v', '2500k', '-maxrate', '2500k', '-bufsize', '5000k',
-    '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', ...output
-  ], { stdio: ['ignore', 'ignore', 'pipe'] });
-
-  ffmpeg.stderr.setEncoding('utf8');
-  ffmpeg.stderr.on('data', chunk => process.stderr.write(redactFfmpegOutput(chunk)));
-  return ffmpeg;
-}
-
-async function updateTitleFile(tracks: PlaylistTrack[]) {
-  const titleFile = join(config.MEDIA_DIR, 'current-title.txt');
-  for (const track of tracks) {
-    await writeFile(titleFile, `NOW PLAYING: ${track.artist} • ${track.title}`);
-    const durationMs = Math.max(1, Math.round((track.durationSeconds || 0) * 1000));
-    await new Promise(resolve => setTimeout(resolve, durationMs));
-  }
+async function play(item: Jingle | StreamTrack, input: NodeJS.WritableStream) {
+  if (!item.audioPath) throw new Error('Missing audio path');
+  await writeFile(titleFile, `NOW PLAYING: ${item.artist} • ${item.title}`);
+  await decodeInto(item.audioPath, input);
 }
 
 async function run() {
-  if (!destinations.length) throw new Error('No RTMP destination configured. Set a YouTube or Twitch URL and stream key.');
-
-  const recovered = await db.track.updateMany({ where: { status: 'PLAYING' }, data: { status: 'BUFFERED' } });
-  if (recovered.count) console.log(`Recovered ${recovered.count} interrupted track(s) to the buffer.`);
-
-  console.log(`Streaming to ${destinations.map(item => item.name).join(' + ')}.`);
+  if (!destinations.length) throw new Error('No RTMP destination configured.');
+  await db.track.updateMany({ where: { status: 'PLAYING' }, data: { status: 'BUFFERED' } });
+  await writeFile(titleFile, 'WAITING FOR THE NEXT TRACK');
+  const encoder = startEncoder();
+  encoder.once('close', code => { console.error(`FFmpeg exited with code ${code ?? 'unknown'}`); process.exit(1); });
+  if (!encoder.stdin) throw new Error('Missing FFmpeg PCM input.');
+  // Prime the raw PCM input before decoding the first track. This gives the
+  // audio visualizer enough samples to initialise instead of stalling at frame 1.
+  await writePcm(encoder.stdin, Buffer.alloc(PCM_SECONDS * 2));
+  const jingles = await loadJingles(); let musicCount = 0; let jingleIndex = 0;
   while (true) {
-    const total = await db.track.aggregate({ _sum: { durationSeconds: true }, where: { status: 'BUFFERED' } });
-    if ((total._sum.durationSeconds || 0) >= config.MIN_BUFFER_MINUTES * 60) break;
-    console.log(`Waiting for ${config.MIN_BUFFER_MINUTES} minute buffer`);
-    await new Promise(resolve => setTimeout(resolve, 10_000));
+    const track = await reserveNextTrack(repository);
+    if (!track) { await writeFile(titleFile, 'WAITING FOR THE NEXT TRACK'); await writePcm(encoder.stdin, Buffer.alloc(PCM_SECONDS * 2)); await wait(2_000); continue; }
+    try {
+      await play(track, encoder.stdin); await completeTrack(repository, track.id); musicCount++;
+      if (jingles.length && musicCount % 3 === 0) await play(jingles[jingleIndex++ % jingles.length], encoder.stdin);
+    } catch (error) {
+      await repository.updateStatus(track.id, 'BUFFERED'); console.error(`Could not play ${track.id}: ${error instanceof Error ? error.message : error}`); await writePcm(encoder.stdin, Buffer.alloc(PCM_SECONDS * 2));
+    }
   }
-
-  const playlist = await buildPlaylist();
-  void updateTitleFile(playlist.tracks).catch(error => {
-    console.error(`Could not update the on-screen title: ${error instanceof Error ? error.message : error}`);
-  });
-  const ffmpeg = startFfmpeg(playlist.path);
-  ffmpeg.once('close', code => {
-    console.error(`FFmpeg exited with code ${code ?? 'unknown'}`);
-    process.exit(1);
-  });
 }
-
-run().catch(error => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+run().catch(error => { console.error(error instanceof Error ? error.message : error); process.exit(1); });

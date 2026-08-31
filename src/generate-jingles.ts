@@ -6,9 +6,9 @@ import { generateMusic, payload } from './minimax.js';
 
 const exec = promisify(execFile);
 const jingles = [
-  'Infinite House Radio.', 'Infinite House Radio. Stay deep.', 'Infinite House Radio. All night.',
-  'Infinite House Radio. Underground.', 'Infinite House Radio. Move.', 'Infinite House Radio. After hours.',
-  'Infinite House Radio. Locked in.', 'Infinite House Radio. Deep frequency.'
+  'Infinite Slop Radio.', 'Infinite Slop Radio. Stay deep.', 'Infinite Slop Radio. All night.',
+  'Infinite Slop Radio. Underground.', 'Infinite Slop Radio. Move.', 'Infinite Slop Radio. After hours.',
+  'Infinite Slop Radio. Locked in.', 'Infinite Slop Radio. Deep frequency.'
 ];
 
 async function main() {
@@ -17,7 +17,7 @@ async function main() {
 
   for (const [index, line] of jingles.entries()) {
     const rawPath = join(outDir, `.house-jingle-${index + 1}-raw.mp3`);
-    const outputPath = join(outDir, `house-radio-jingle-${index + 1}.mp3`);
+    const outputPath = join(outDir, `infinite-slop-radio-jingle-${index + 1}.mp3`);
     if (await access(outputPath).then(() => true).catch(() => false)) {
       console.log(`Jingle ${index + 1}/${jingles.length} already exists, skipping.`);
       continue;
