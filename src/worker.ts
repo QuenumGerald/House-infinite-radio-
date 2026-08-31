@@ -6,7 +6,7 @@ import { db } from './db.js';
 import { config } from './config.js';
 import { generateMusic, payload } from './minimax.js';
 import { duration } from './probe.js';
-import { chooseArtist, chooseVoice, varyBpm } from './music.js';
+import { chooseArtist, chooseVoice, genres, varyBpm } from './music.js';
 import { generateLyricsAndPromptWithM3 } from './llm.js';
 
 await mkdir(config.MEDIA_DIR, { recursive: true });
@@ -52,7 +52,24 @@ async function refill() {
   const recipes = await db.recipe.findMany({ where: { approved: true } });
   if (!recipes.length) return;
 
-  const recipe = recipes[Math.floor(Math.random() * recipes.length)];
+  const totals = await db.track.groupBy({
+    by: ['genre'],
+    where: { status: { in: ['BUFFERED', 'GENERATING'] } },
+    _sum: { durationSeconds: true },
+    _count: { _all: true }
+  });
+  // A queued generation has no duration yet, so reserve roughly three minutes
+  // for it in the balance. This keeps parallel jobs distributed by genre.
+  const minutesByGenre = new Map(totals.map(total => [
+    total.genre,
+    (total._sum.durationSeconds || 0) / 60 + total._count._all * 3
+  ]));
+  const availableGenres = genres.filter(genre => recipes.some(recipe => recipe.genre === genre));
+  const selectedGenre = availableGenres.reduce((leastBuffered, genre) =>
+    (minutesByGenre.get(genre) || 0) < (minutesByGenre.get(leastBuffered) || 0) ? genre : leastBuffered
+  );
+  const genreRecipes = recipes.filter(recipe => recipe.genre === selectedGenre);
+  const recipe = genreRecipes[Math.floor(Math.random() * genreRecipes.length)];
   const voice = chooseVoice();
   const bpm = varyBpm(recipe.genre);
   const artist = chooseArtist(recipe.genre);

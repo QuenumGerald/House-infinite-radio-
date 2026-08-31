@@ -79,13 +79,13 @@ function startFfmpeg(playlistPath: string) {
   const titleFile = join(config.MEDIA_DIR, 'current-title.txt');
   // A calm waveform is much lighter than a scrolling spectrum, avoiding both
   // the strobe effect and encoder starvation on a continuous live stream.
-  const filter = `[1:a]asetpts=N/SR/TB,asplit=2[audio][visualizer];[visualizer]showspectrum=s=1024x260:mode=combined:color=green:scale=cbrt:slide=scroll,format=rgba[spectrum];[0:v]scale=1280:720,drawtext=text='INFINITE HOUSE RADIO':fontcolor=white:fontsize=42:x=40:y=40:shadowcolor=black:shadowx=2:shadowy=2,drawtext=textfile='${titleFile}':reload=1:fontcolor=white:fontsize=26:x=40:y=100:shadowcolor=black:shadowx=2:shadowy=2[background];[background][spectrum]overlay=128:230:shortest=1[v]`;
+  const filter = `[1:a]asetpts=N/SR/TB,asplit=3[audio][visualizer][meter];[visualizer]showwaves=s=960x200:mode=cline:colors=0x39ff14,format=rgba,colorkey=0x000000:0.01:0.0[waveform];[meter]showvolume=s=220x70:orientation=h:colors=0x39ff14,format=rgba,colorkey=0x000000:0.01:0.0[vumeter];[0:v]scale=1280:720,drawbox=x=24:y=24:w=710:h=120:color=black@0.42:t=fill,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='INFINITE HOUSE RADIO':fontcolor=0xf7fbff:fontsize=42:x=48:y=44:shadowcolor=black@0.7:shadowx=2:shadowy=2,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:textfile='${titleFile}':reload=1:fontcolor=0x59e5d2:fontsize=24:x=50:y=101:shadowcolor=black@0.8:shadowx=1:shadowy=1[background];[background][waveform]overlay=160:260[withwave];[withwave][vumeter]overlay=1015:625:shortest=1[v]`;
   const ffmpeg = spawn('ffmpeg', [
     '-loop', '1', '-framerate', '30', '-i', config.BACKGROUND_PATH,
     '-re', '-f', 'concat', '-safe', '0', '-i', playlistPath,
     '-filter_complex_threads', '1', '-filter_complex', filter, '-map', '[v]', '-map', '[audio]',
-    '-c:v', 'libx264', '-preset', 'veryfast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
-    '-r', '30', '-g', '60', '-keyint_min', '60', '-sc_threshold', '0',
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p',
+    '-r', '20', '-g', '40', '-keyint_min', '40', '-sc_threshold', '0',
     '-b:v', '2500k', '-maxrate', '2500k', '-bufsize', '5000k',
     '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', ...output
   ], { stdio: ['ignore', 'ignore', 'pipe'] });
