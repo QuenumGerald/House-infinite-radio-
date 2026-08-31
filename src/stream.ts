@@ -68,10 +68,14 @@ async function loadJingles(): Promise<Jingle[]> {
 function startEncoder() {
   const output = destinations.length === 1
     ? ['-flvflags', 'no_duration_filesize', '-f', 'flv', destinations[0].target]
-    : ['-f', 'tee', destinations.map(item => `[f=flv]${item.target}`).join('|')];
+    // A dedicated tee FIFO prevents a temporarily slow RTMP endpoint from
+    // applying backpressure to the single shared encoder or the other platform.
+    : ['-f', 'tee', destinations.map(item => `[use_fifo=1:fifo_options=drop_pkts_on_overflow=1:onfail=ignore:f=flv]${item.target}`).join('|')];
   // The pipe must be FFmpeg's first input. With a looping still image first,
   // FFmpeg 5.1 can wait indefinitely before producing the initial frame.
-  const process = spawn('ffmpeg', ['-thread_queue_size', '4096', '-f', 's16le', '-ar', '44100', '-ac', '2', '-i', 'pipe:0', '-re', '-loop', '1', '-framerate', '15', '-i', config.BACKGROUND_PATH, '-filter_complex', AUDIO_VISUAL_FILTER, '-map', '[v]', '-map', '[audio]', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p', '-r', '15', '-g', '30', '-b:v', '2000k', '-maxrate', '2000k', '-bufsize', '4000k', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', ...output], { stdio: ['pipe', 'ignore', 'pipe'] });
+  // A 15 FPS / 3 Mb/s profile keeps the visual smooth enough for YouTube while
+  // remaining substantially lighter than the original 1080p live configuration.
+  const process = spawn('ffmpeg', ['-filter_complex_threads', '6', '-thread_queue_size', '4096', '-f', 's16le', '-ar', '44100', '-ac', '2', '-i', 'pipe:0', '-re', '-loop', '1', '-framerate', '15', '-i', config.BACKGROUND_PATH, '-filter_complex', AUDIO_VISUAL_FILTER, '-map', '[v]', '-map', '[audio]', '-c:v', 'libx264', '-threads', '6', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p', '-r', '15', '-g', '30', '-b:v', '3000k', '-maxrate', '3000k', '-bufsize', '6000k', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', ...output], { stdio: ['pipe', 'ignore', 'pipe'] });
   process.stderr.setEncoding('utf8'); process.stderr.on('data', chunk => globalThis.process.stderr.write(redact(chunk)));
   if (!process.stdin) throw new Error('Could not open main FFmpeg PCM input.');
   return process;
