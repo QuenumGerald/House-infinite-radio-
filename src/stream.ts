@@ -57,7 +57,11 @@ async function decodeInto(audioPath: string, input: NodeJS.WritableStream) {
 }
 
 async function loadJingles(): Promise<Jingle[]> {
-  const files = await readdir(join(config.MEDIA_DIR, 'jingles')).then(files => files.filter(file => /^infinite-slop-radio-jingle-\d+\.mp3$/.test(file)).sort()).catch(() => [] as string[]);
+  const files = await readdir(join(config.MEDIA_DIR, 'jingles')).then(files => files
+    // Existing station IDs remain usable while the rebranded batch is generated.
+    .filter(file => /^(?:infinite-slop-radio-jingle|house-radio-jingle)-\d+\.mp3$/.test(file))
+    .sort())
+    .catch(() => [] as string[]);
   return files.map(file => ({ audioPath: join(config.MEDIA_DIR, 'jingles', file), artist: 'Station ID', title: 'Infinite Slop Radio' }));
 }
 
