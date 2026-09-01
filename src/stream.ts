@@ -16,14 +16,11 @@ function destination(url: string, key: string, name: Destination['name']): Desti
 const destinations = [destination(config.YOUTUBE_RTMPS_URL, config.YOUTUBE_STREAM_KEY, 'YouTube'), destination(config.TWITCH_RTMP_URL, config.TWITCH_STREAM_KEY, 'Twitch')].filter((item): item is Destination => item !== null);
 const titleFile = join(config.MEDIA_DIR, 'current-title.txt');
 const VIDEO_OVERLAY_FILTER = [
-  "[1:v][wave]overlay=x=(W-w)/2:y=(H-h)/2+65:format=auto,drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='INFINITE SLOP RADIO':x=58:y=46:fontsize=32:fontcolor=white@0.92:shadowcolor=black@0.7:shadowx=2:shadowy=2",
+  "[1:v]drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:text='INFINITE HOUSE RADIO':x=58:y=46:fontsize=32:fontcolor=white@0.92:shadowcolor=black@0.7:shadowx=2:shadowy=2",
   `drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf:textfile=${titleFile}:reload=1:x=60:y=95:fontsize=19:fontcolor=white@0.95:shadowcolor=black@0.8:shadowx=2:shadowy=2`,
   "drawtext=fontfile=/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf:text='LIVE':x=w-112:y=52:fontsize=20:fontcolor=white:box=1:boxcolor=red@0.95:boxborderw=8[v]"
 ].join(',');
-const AUDIO_VISUAL_FILTER = [
-  '[0:a]asplit=2[audio][visual]',
-  '[visual]showwaves=s=420x72:mode=cline:draw=full:colors=0x00ff66[wave]'
-].join(';') + ';' + VIDEO_OVERLAY_FILTER;
+const AUDIO_VISUAL_FILTER = '[0:a]anull[audio];' + VIDEO_OVERLAY_FILTER;
 
 function wait(ms: number) { return new Promise(resolve => setTimeout(resolve, ms)); }
 function redact(value: string) { return destinations.reduce((text, item) => text.replaceAll(item.target, `[${item.name} RTMP destination]`), value); }
@@ -62,7 +59,7 @@ async function loadJingles(): Promise<Jingle[]> {
     .filter(file => /^(?:infinite-slop-radio-jingle|house-radio-jingle)-\d+\.mp3$/.test(file))
     .sort())
     .catch(() => [] as string[]);
-  return files.map(file => ({ audioPath: join(config.MEDIA_DIR, 'jingles', file), artist: 'Station ID', title: 'Infinite Slop Radio' }));
+  return files.map(file => ({ audioPath: join(config.MEDIA_DIR, 'jingles', file), artist: 'Station ID', title: 'Infinite House Radio' }));
 }
 
 function startEncoder() {
@@ -70,12 +67,12 @@ function startEncoder() {
     ? ['-flvflags', 'no_duration_filesize', '-f', 'flv', destinations[0].target]
     // A dedicated tee FIFO prevents a temporarily slow RTMP endpoint from
     // applying backpressure to the single shared encoder or the other platform.
-    : ['-f', 'tee', destinations.map(item => `[use_fifo=1:fifo_options=drop_pkts_on_overflow=1:onfail=ignore:f=flv]${item.target}`).join('|')];
+    : ['-f', 'tee', destinations.map(item => `[f=flv]${item.target}`).join('|')];
   // The pipe must be FFmpeg's first input. With a looping still image first,
   // FFmpeg 5.1 can wait indefinitely before producing the initial frame.
   // A 15 FPS / 3 Mb/s profile keeps the visual smooth enough for YouTube while
   // remaining substantially lighter than the original 1080p live configuration.
-  const process = spawn('ffmpeg', ['-filter_complex_threads', '6', '-thread_queue_size', '4096', '-f', 's16le', '-ar', '44100', '-ac', '2', '-i', 'pipe:0', '-re', '-loop', '1', '-framerate', '15', '-i', config.BACKGROUND_PATH, '-filter_complex', AUDIO_VISUAL_FILTER, '-map', '[v]', '-map', '[audio]', '-c:v', 'libx264', '-threads', '6', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p', '-r', '15', '-g', '30', '-b:v', '3000k', '-maxrate', '3000k', '-bufsize', '6000k', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', ...output], { stdio: ['pipe', 'ignore', 'pipe'] });
+  const process = spawn('ffmpeg', ['-thread_queue_size', '4096', '-f', 's16le', '-ar', '44100', '-ac', '2', '-i', 'pipe:0', '-re', '-loop', '1', '-framerate', '15', '-i', config.BACKGROUND_PATH, '-filter_complex', AUDIO_VISUAL_FILTER, '-map', '[v]', '-map', '[audio]', '-c:v', 'libx264', '-preset', 'ultrafast', '-tune', 'stillimage', '-pix_fmt', 'yuv420p', '-r', '15', '-g', '30', '-b:v', '4500k', '-maxrate', '4500k', '-bufsize', '9000k', '-c:a', 'aac', '-b:a', '160k', '-ar', '44100', ...output], { stdio: ['pipe', 'ignore', 'pipe'] });
   process.stderr.setEncoding('utf8'); process.stderr.on('data', chunk => globalThis.process.stderr.write(redact(chunk)));
   if (!process.stdin) throw new Error('Could not open main FFmpeg PCM input.');
   return process;

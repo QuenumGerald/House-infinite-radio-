@@ -6,9 +6,9 @@ import { generateMusic, payload } from './minimax.js';
 
 const exec = promisify(execFile);
 const jingles = [
-  'Infinite Slop Radio.', 'Infinite Slop Radio. Stay deep.', 'Infinite Slop Radio. All night.',
-  'Infinite Slop Radio. Underground.', 'Infinite Slop Radio. Move.', 'Infinite Slop Radio. After hours.',
-  'Infinite Slop Radio. Locked in.', 'Infinite Slop Radio. Deep frequency.'
+  'Infinite House Radio.', 'Infinite House Radio. Stay deep.', 'Infinite House Radio. All night.',
+  'Infinite House Radio. Underground.', 'Infinite House Radio. Move.', 'Infinite House Radio. After hours.',
+  'Infinite House Radio. Locked in.', 'Infinite House Radio. Deep frequency.'
 ];
 
 async function main() {
