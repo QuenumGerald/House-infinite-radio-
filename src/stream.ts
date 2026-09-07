@@ -79,8 +79,9 @@ function startEncoder() {
 }
 
 const repository = {
-  findOldestBuffered: () => db.track.findFirst({ where: { status: 'BUFFERED', audioPath: { not: null } }, orderBy: { createdAt: 'asc' }, select: { id: true, title: true, artist: true, audioPath: true } }),
-  updateStatus: async (id: string, status: 'PLAYING' | 'PLAYED' | 'BUFFERED') => { await db.track.update({ where: { id }, data: { status } }); }
+  findOldestBuffered: () => db.track.findFirst({ where: { status: 'BUFFERED', audioPath: { not: null } }, orderBy: { updatedAt: 'asc' }, select: { id: true, title: true, artist: true, audioPath: true } }),
+  updateStatus: async (id: string, status: 'PLAYING' | 'PLAYED' | 'BUFFERED') => { await db.track.update({ where: { id }, data: { status } }); },
+  recyclePlayed: async () => { await db.track.updateMany({ where: { status: 'PLAYED', audioPath: { not: null } }, data: { status: 'BUFFERED' } }); }
 };
 
 async function play(item: Jingle | StreamTrack, input: NodeJS.WritableStream) {
@@ -105,7 +106,7 @@ async function run() {
     if (!track) { await writeFile(titleFile, 'WAITING FOR THE NEXT TRACK'); await writePcm(encoder.stdin, Buffer.alloc(PCM_BYTES_PER_SECOND)); await wait(1_000); continue; }
     try {
       console.error(`Playing: ${track.artist} - ${track.title}`);
-      await play(track, encoder.stdin); await completeTrack(repository, track.id); musicCount++;
+      await play(track, encoder.stdin); await completeTrack(repository, track.id, { recycle: config.LIBRARY_ONLY }); musicCount++;
       if (jingles.length && musicCount % 3 === 0) await play(jingles[jingleIndex++ % jingles.length], encoder.stdin);
     } catch (error) {
       await repository.updateStatus(track.id, 'BUFFERED'); console.error(`Could not play ${track.id}: ${error instanceof Error ? error.message : error}`); await writePcm(encoder.stdin, Buffer.alloc(PCM_BYTES_PER_SECOND)); await wait(1_000);

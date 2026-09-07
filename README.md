@@ -1,57 +1,63 @@
 # Infinite House Radio
 
-An autonomous electronic music generator and radio: MiniMax creates tracks, the worker prepares them, and a permanent FFmpeg streamer broadcasts them to YouTube and/or Twitch.
+A 24/7 electronic radio. The station now plays the local catalog of already generated MiniMax tracks. The GMI / MiniMax APIs are no longer required.
 
 ## Architecture
 
-`MiniMax M3 (GMI Serving) → MiniMax Music 3.0 (GMI Cloud) → PostgreSQL → BullMQ worker → buffer → FFmpeg → RTMP`
+`deploy-export catalog → PostgreSQL → buffer → FFmpeg → RTMP`
 
-The streamer keeps one FFmpeg process alive. It dynamically fetches `BUFFERED` tracks, decodes each MP3 into stereo 44.1 kHz PCM, and writes it to FFmpeg stdin. A track generated after the live starts can therefore be broadcast without restarting the stream.
+On startup the API seeds recipes and tracks from `deploy-export/radio.sql`, copies the MP3s into `MEDIA_DIR`, and the streamer rotates that library. Finished tracks return to the buffer so the live show never runs out of music.
 
-Track lifecycle: `BUFFERED → PLAYING → PLAYED`. On restart, unfinished `PLAYING` tracks return to `BUFFERED`; `PLAYED` tracks are never replayed. When the buffer is empty, FFmpeg stays alive and receives temporary silence.
+Optional generation path, disabled by default: `MiniMax M3 (GMI Serving) → MiniMax Music 3.0 (GMI Cloud)`. Set `LIBRARY_ONLY=false` only if you still have API access.
+
+Track lifecycle in library mode: `BUFFERED → PLAYING → BUFFERED`. On restart, unfinished `PLAYING` tracks return to `BUFFERED`. When the buffer is empty, previously `PLAYED` catalog tracks are recycled. If nothing is available, FFmpeg stays alive and receives temporary silence.
 
 ## Genres and artists
 
-- `DEEP_HOUSE` — Velvet Current, Lumen Tool, Mira Solace
-- `MINIMAL_DEEP_TECH` — Subphase, Kinetic Vale, Cipher Bloom
-- `DRUM_AND_BASS` — Voltage Veil, Neon Vector, Breakline Echo
+- `DEEP_HOUSE` — Velvet Current, Mira Solace, Night Terrace
+- `MINIMAL_DEEP_TECH` — Static Parcel, Lumen Tool, Low Orbit
+- `DRUM_AND_BASS` — Vector Rain, Subphase, Kinetic Vale
 
-Artist identities are fixed per genre, and prompts/BPM ranges are adapted to each style.
+The web UI lists the local catalog and lets you preview each MP3. Generation / calibration controls stay hidden while `LIBRARY_ONLY=true`.
 
 ## Docker
 
 ```bash
 cp .env.example .env
-# Add secrets to .env only
+# Add stream secrets to .env only. GMI_API_KEY is optional in library mode.
 docker compose up --build -d postgres redis api worker
 docker compose up --build -d stream
 ```
 
-Web interface: <http://localhost:3000>. Set `AUTONOMOUS=true` to let the worker maintain the buffer automatically.
+Web interface: <http://localhost:3000>. The API imports the `deploy-export` catalog automatically.
 
 ## RTMP configuration
 
-Set `GMI_API_KEY`, the YouTube variables (`YOUTUBE_RTMPS_URL`, `YOUTUBE_STREAM_KEY`) and/or Twitch variables (`TWITCH_RTMP_URL`, `TWITCH_STREAM_KEY`) in `.env`. YouTube only, Twitch only, or both destinations are supported. Secrets must never be logged or committed; `.env` must remain private.
+Set the YouTube variables (`YOUTUBE_RTMPS_URL`, `YOUTUBE_STREAM_KEY`) and/or Twitch variables (`TWITCH_RTMP_URL`, `TWITCH_STREAM_KEY`) in `.env`. YouTube only, Twitch only, or both destinations are supported. Secrets must never be logged or committed; `.env` must remain private.
 
 Current stable video profile: `1280×720`, 15 FPS, ultrafast H.264 at 4.5 Mbps, and AAC at 160 kbps. The background is `assets/background-720.jpg`; track titles are written to `current-title.txt`. The visualizer is disabled to preserve encoding stability.
 
 Jingles stored in `data/media/jingles/` are injected into the same PCM stream after every third music track. Accepted filenames are `infinite-slop-radio-jingle-N.mp3` and `house-radio-jingle-N.mp3`.
 
-## Generation
+## Local catalog
+
+The checked-in dump and audio live in `deploy-export/`:
+
+- `radio.sql` — recipes and track metadata
+- `media/*.mp3` — 28 generated tracks
 
 ```bash
-npm run generate -- --genre MINIMAL_DEEP_TECH --bpm 124
-npm run generate:jingles
+npm run seed:library
 ```
 
-`KEEP` preserves an approved recipe as an allowed basis for future generations; `REJECT` excludes it.
+`LIBRARY_ONLY=true` (the default) disables `POST /api/generations` and autonomous MiniMax refill. Set `LIBRARY_ONLY=false` to restore API generation.
 
 ## API
 
-- `POST /api/generations` — `{ "genre": "DEEP_HOUSE" }`
-- `GET /api/tracks?status=CALIBRATION`
+- `GET /api/tracks` — local catalog
+- `GET /health` — `{ ok, mode, tracks }`
+- `POST /api/generations` — disabled in library mode
 - `POST /api/tracks/:id/decision` — `{ "decision": "KEEP" }` or `REJECT`
-- `GET /health`
 
 ## Development
 
@@ -62,8 +68,7 @@ npm install
 npx prisma generate
 npm test
 npm run build
+npm run seed:library
 ```
 
-Tests cover dynamic selection (`BUFFERED → PLAYING → PLAYED`) and consuming new tracks added after the streamer starts.
-
-Thanks to GMI for sponsoring the MiniMax models used by Infinite House Radio.
+Tests cover catalog import from the SQL dump, dynamic selection (`BUFFERED → PLAYING → PLAYED`), local rotation, and consuming new tracks added after the streamer starts.

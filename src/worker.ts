@@ -14,6 +14,11 @@ await mkdir(config.MEDIA_DIR, { recursive: true });
 new Worker(
   'music-generation',
   async job => {
+    if (config.LIBRARY_ONLY) {
+      console.warn(`[library] Skipping generation job ${job.data.trackId}; the station plays the local catalog.`);
+      return;
+    }
+
     const track = await db.track.findUniqueOrThrow({
       where: { id: job.data.trackId },
       include: { recipe: true }
@@ -40,7 +45,7 @@ new Worker(
 );
 
 async function refill() {
-  if (!config.AUTONOMOUS) return;
+  if (config.LIBRARY_ONLY || !config.AUTONOMOUS) return;
 
   const aggregate = await db.track.aggregate({
     _sum: { durationSeconds: true },

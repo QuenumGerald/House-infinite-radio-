@@ -10,12 +10,20 @@ import { generationQueue } from './queue.js';
 import { chooseArtist, chooseVoice, genres, varyBpm } from './music.js';
 import { payload } from './minimax.js';
 import { generateLyricsAndPromptWithM3 } from './llm.js';
+import { seedLibrary } from './library.js';
 
 const app = Fastify({ logger: true });
 await app.register(cors);
 await app.register(fastifyStatic, { root: join(process.cwd(), 'public') });
 
-app.get('/health', () => ({ ok: true }));
+if (config.LIBRARY_ONLY) {
+  await seedLibrary();
+}
+
+app.get('/health', async () => {
+  const tracks = await db.track.count({ where: { audioPath: { not: null } } });
+  return { ok: true, mode: config.LIBRARY_ONLY ? 'library' : 'generation', tracks };
+});
 
 app.get('/api/tracks', async req => {
   const q = req.query as { status?: TrackStatus };
@@ -27,6 +35,10 @@ app.get('/api/tracks', async req => {
 });
 
 app.post('/api/generations', async (req, reply) => {
+  if (config.LIBRARY_ONLY) {
+    return reply.code(503).send({ error: 'Generation is disabled. The station plays the local catalog.' });
+  }
+
   const { genre } = req.body as { genre: Genre };
   if (!genres.includes(genre)) return reply.code(400).send({ error: 'Unsupported genre' });
 
