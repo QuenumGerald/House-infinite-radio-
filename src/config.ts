@@ -12,6 +12,9 @@ export const config = z.object({
   AUTONOMOUS: z.string().default('false').transform(v => v === 'true'),
   LIBRARY_ONLY: z.string().default('true').transform(v => v !== 'false'),
   LIBRARY_DIR: z.string().default('./deploy-export/media'),
+  LIBRARY_DIRS: z.string().default('./deploy-export/media,./data/media').transform(value =>
+    value.split(',').map(item => item.trim()).filter(Boolean)
+  ),
   LIBRARY_DUMP: z.string().default('./deploy-export/radio.sql'),
   TARGET_BUFFER_MINUTES: z.coerce.number().default(60),
   MIN_BUFFER_MINUTES: z.coerce.number().default(30),

@@ -30,7 +30,7 @@ app.get('/api/tracks', async req => {
   return db.track.findMany({
     where: q.status ? { status: q.status } : {},
     orderBy: { createdAt: 'desc' },
-    take: 100
+    take: 500
   });
 });
 

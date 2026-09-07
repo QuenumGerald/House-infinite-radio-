@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
-import { libraryAudioPath, parseRadioDump } from './catalog.js';
+import { inferTrackFromFileName, isLibraryAudioFile, libraryAudioPath, librarySourceDirectories, libraryTrackId, parseRadioDump } from './catalog.js';
 
 const fixture = `
 COPY public."Recipe" (id, genre, prompt, approved, "createdAt") FROM stdin;
@@ -37,5 +37,24 @@ describe('library catalog', () => {
     expect(catalog.recipes).toHaveLength(28);
     expect(catalog.tracks).toHaveLength(28);
     expect(catalog.tracks.every(track => track.fileName.endsWith('.mp3'))).toBe(true);
+  });
+
+  it('imports loose generated filenames that are not in the dump', () => {
+    expect(isLibraryAudioFile('velvet_current_night_shift_deep_house_122bpm_2026-09-01.mp3')).toBe(true);
+    expect(isLibraryAudioFile('current-title.txt')).toBe(false);
+    expect(inferTrackFromFileName('velvet_current_night_shift_deep_house_122bpm_2026-09-01.mp3')).toEqual({
+      title: 'Night Shift',
+      artist: 'Velvet Current',
+      genre: 'DEEP_HOUSE'
+    });
+    expect(libraryTrackId('extra-roller.mp3')).toBe('lib_extra_roller');
+  });
+
+  it('always scans the server media directory first', () => {
+    expect(librarySourceDirectories('/data/media', ['./deploy-export/media', '/data/media', './data/media'])).toEqual([
+      '/data/media',
+      './deploy-export/media',
+      './data/media'
+    ]);
   });
 });

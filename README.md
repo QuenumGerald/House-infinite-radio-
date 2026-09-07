@@ -1,12 +1,12 @@
 # Infinite House Radio
 
-A 24/7 electronic radio. The station now plays the local catalog of already generated MiniMax tracks. The GMI / MiniMax APIs are no longer required.
+A 24/7 electronic radio. The station now plays the tracks already stored on the server. The GMI / MiniMax APIs are no longer required.
 
 ## Architecture
 
-`deploy-export catalog → PostgreSQL → buffer → FFmpeg → RTMP`
+`server media volume + PostgreSQL → buffer → FFmpeg → RTMP`
 
-On startup the API seeds recipes and tracks from `deploy-export/radio.sql`, copies the MP3s into `MEDIA_DIR`, and the streamer rotates that library. Finished tracks return to the buffer so the live show never runs out of music.
+Generated MP3s live on the server in `MEDIA_DIR` (Docker volume `/data/media`), not in git. That is expected: the worker writes each new track there. In library mode the API indexes every MP3 already on that volume, keeps the titles/artists stored in Postgres, and the streamer rotates the whole catalog.
 
 Optional generation path, disabled by default: `MiniMax M3 (GMI Serving) → MiniMax Music 3.0 (GMI Cloud)`. Set `LIBRARY_ONLY=false` only if you still have API access.
 
@@ -29,7 +29,7 @@ docker compose up --build -d postgres redis api worker
 docker compose up --build -d stream
 ```
 
-Web interface: <http://localhost:3000>. The API imports the `deploy-export` catalog automatically.
+Web interface: <http://localhost:3000>. Keep the existing `media` volume: it already holds every generated track.
 
 ## RTMP configuration
 
@@ -41,10 +41,13 @@ Jingles stored in `data/media/jingles/` are injected into the same PCM stream af
 
 ## Local catalog
 
-The checked-in dump and audio live in `deploy-export/`:
+The live catalog is the server volume mounted at `MEDIA_DIR=/data/media`. On startup the API:
 
-- `radio.sql` — recipes and track metadata
-- `media/*.mp3` — 28 generated tracks
+1. Reads every `.mp3` already on that volume
+2. Reuses Postgres metadata when the file matches an existing track
+3. Falls back to `deploy-export/radio.sql` only for tracks that have no server record yet
+
+`deploy-export/` is only a snapshot from 31 August (28 tracks). Later generations stay on the server volume and are picked up automatically after deploy.
 
 ```bash
 npm run seed:library
@@ -71,4 +74,4 @@ npm run build
 npm run seed:library
 ```
 
-Tests cover catalog import from the SQL dump, dynamic selection (`BUFFERED → PLAYING → PLAYED`), local rotation, and consuming new tracks added after the streamer starts.
+Tests cover catalog import from the SQL dump, server media directory scanning, dynamic selection (`BUFFERED → PLAYING → PLAYED`), local rotation, and consuming new tracks added after the streamer starts.
