@@ -10,6 +10,7 @@
     "build": "tsc -p tsconfig.json && vite build",
     "generate": "tsx src/generate-standalone.ts",
     "generate:jingles": "tsx src/generate-jingles.ts",
+    "seed:library": "tsx src/seed-library.ts",
     "start": "node dist/src/server.js",
     "test": "vitest run --root . src",
     "prisma:generate": "prisma generate",
